@@ -1,49 +1,62 @@
+// C++ code
+//
+
 const byte LED_PIN = 13;
 const byte METER_PIN = A4;
-volatile double timerFrequency = 2.0; // Default frequency in Hz
+
 
 void setup()
 {
   pinMode(LED_PIN, OUTPUT);
   pinMode(METER_PIN, INPUT);
+  
+  ADMUX = 0; // Use ADC0 (A0) as analog input
+  ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
+      
   Serial.begin(9600);
-  startTimer(); // Initialize the timer with default frequency
+  
 }
 
 void loop()
-{
-  // Read the potentiometer value
-  int sensorValue = analogRead(METER_PIN);
-  // Map the potentiometer value to the timer frequency range (0.5 Hz to 10 Hz)
-  timerFrequency = map(sensorValue, 0, 1023, 0.5, 10);
+{ 
+  int Value = analogRead(METER_PIN);
+  
+  // Mapping the potentiometer value to a frequency range (0.1 Hz to 10 Hz)
+  double Frequency = map(Value, 0, 1023, 1, 100) / 10.0;   
+  
+  startTimer(Frequency);
+  
+  delay(2000);
 }
 
-void startTimer()
-{
-  // Calculate the timer period based on the frequency
-  double timerPeriod = 1.0 / timerFrequency;
-  uint16_t timerPrescaler = 1024; // Prescaler for Timer1
-  uint16_t timerCompareValue = round((timerPeriod * 16000000.0) / timerPrescaler) - 1;
 
-  noInterrupts(); // Disable interrupts
 
-  TCCR1A = 0; // Set Timer1 control registers to zero
+void startTimer(double timerFrequency){
+  noInterrupts();
+  TCCR1A = 0; // Reseting the Timer1 Control Registers
   TCCR1B = 0;
-
-  // Set the Timer1 mode (CTC mode) and prescaler
-  TCCR1B |= (1 << WGM12);                 // CTC mode, top value = OCR1A
-  TCCR1B |= (1 << CS12) | (1 << CS10);    // Set prescaler to 1024
-
-  // Set the Timer1 compare match value
-  OCR1A = timerCompareValue;
-
-  // Enable Timer1 compare match A interrupt
+  
+  // Calculate the timer register value for the given frequency
+  unsigned long prescaler = 1024;
+  unsigned long timer = (F_CPU / prescaler) / timerFrequency;
+  
+  // Setting up the Timer1 Mode to CTC 
+  TCCR1B |= (1 << WGM12);
+  
+  // Set Timer1 Prescaler to 1024 (Clock Divided by 1024)
+  TCCR1B |= (1 << CS12) | (1 << CS10);
+  
+  // Setting up the Compare Match Register for a 2-second interval (0.5 Hz frequency)
+  OCR1A = timer - 1;
+  
+  // Enabling the Timer1 Compare Match A Interrupt
   TIMSK1 |= (1 << OCIE1A);
-
-  interrupts(); // Enable interrupts
+  
+  
+  interrupts();
 }
 
-ISR(TIMER1_COMPA_vect)
-{
-  digitalWrite(LED_PIN, !digitalRead(LED_PIN)); // Toggle the LED
+
+ISR(TIMER1_COMPA_vect){
+   digitalWrite(LED_PIN, digitalRead(LED_PIN) ^ 1);
 }
