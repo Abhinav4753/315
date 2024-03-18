@@ -1,118 +1,106 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <pthread.h>
-#include <semaphore.h>
-#include <time.h>
+#include <iostream>
+#include <thread>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
+#include <vector>
+#include <algorithm>
+#include <ctime>
 
-#define BUFFER_SIZE 1
-#define MAX_LIGHTS 10
-#define NUM_PRODUCERS 2
-#define NUM_CONSUMERS 2
+using namespace std;
+using namespace std::chrono;
 
-typedef struct {
-    time_t timestamp;
+struct TrafficData 
+{
+    time_point<system_clock> timestamp;
     int lightId;
     int carsPassed;
-} TrafficData;
+};
 
-typedef struct {
-    TrafficData data[BUFFER_SIZE];
-    int in, out;
-    sem_t mutex, full, empty;
-} BoundedBuffer;
+queue<TrafficData> trafficQueue;
+mutex queueMutex;
+condition_variable cv;
 
-BoundedBuffer buffer;
-pthread_mutex_t congestionDataLock = PTHREAD_MUTEX_INITIALIZER;
-int congestionData[MAX_LIGHTS];
+void produceTrafficData(int numSignals) 
+{
+    while (true) 
+    {
+        for (int i = 1; i <= numSignals; i++) 
+        {
+            TrafficData data;
+            data.timestamp = system_clock::now();
+            data.lightId = i;
+            data.carsPassed = rand() % 500;
 
-time_t currentTime; // Global variable to store current time
+            unique_lock<mutex> lock(queueMutex);
+            trafficQueue.push(data);
 
-void initBuffer(BoundedBuffer* buffer) {
-    buffer->in = 0;
-    buffer->out = 0;
-    sem_init(&buffer->mutex, 0, 1);
-    sem_init(&buffer->full, 0, 0);
-    sem_init(&buffer->empty, 0, BUFFER_SIZE);
-}
-
-void produce(BoundedBuffer* buffer) {
-    struct timespec currentTimeSpec;
-    clock_gettime(CLOCK_REALTIME, &currentTimeSpec);
-
-    for (int i = 0; i < 12; i++) {
-        TrafficData newData = {
-            .timestamp = currentTimeSpec.tv_sec + (i * 300), // 5 minutes interval
-            .lightId = rand() % MAX_LIGHTS + 1,
-            .carsPassed = rand() % 100 + 1,
-        };
-
-        sem_wait(&buffer->empty);
-        sem_wait(&buffer->mutex);
-
-        buffer->data[buffer->in] = newData;
-        buffer->in = (buffer->in + 1) % BUFFER_SIZE;
-
-        sem_post(&buffer->mutex);
-        sem_post(&buffer->full);
-
-        usleep(rand() % 500000 + 500000); // Simulate delay between measurements
-    }
-}
-
-
-void consume(BoundedBuffer* buffer) {
-    while (1) {
-        sem_wait(&buffer->full);
-        sem_wait(&buffer->mutex);
-
-        TrafficData data = buffer->data[buffer->out];
-        buffer->out = (buffer->out + 1) % BUFFER_SIZE;
-
-        sem_post(&buffer->mutex);
-        sem_post(&buffer->empty);
-
-        pthread_mutex_lock(&congestionDataLock);
-
-        if (congestionData[data.lightId] != 0) {
-            congestionData[data.lightId] += data.carsPassed;
-        } else {
-            congestionData[data.lightId] = data.carsPassed;
+            cv.notify_one();
         }
 
-        pthread_mutex_unlock(&congestionDataLock);
-
-        char timestampStr[20];
-        strftime(timestampStr, sizeof(timestampStr), "%Y-%m-%d %H:%M:%S", localtime(&data.timestamp));
-        printf("Data - Time: %s, LightId: %d, CarsPassed: %d\n", timestampStr, data.lightId, data.carsPassed);
-
-        usleep(100000); // Simulate processing time
+        this_thread::sleep_for(chrono::minutes(5));
     }
 }
 
-int main() {
-    initBuffer(&buffer);
+void consumeTrafficData(int numSignals) 
+{
+    while (true) 
+    {
+        unique_lock<mutex> lock(queueMutex);
+        cv.wait(lock, [] { return !trafficQueue.empty(); });
 
-    pthread_t producerThreads[NUM_PRODUCERS];
-    for (int i = 0; i < NUM_PRODUCERS; i++) {
-        pthread_create(&producerThreads[i], NULL, (void*)&produce, &buffer);
+        vector<TrafficData> trafficData;
+
+        while (!trafficQueue.empty()) 
+        {
+            trafficData.push_back(trafficQueue.front());
+            trafficQueue.pop();
+        }
+
+        lock.unlock();
+
+        cout << "Data of the Traffic Lights" << endl;
+
+        for (const auto& data : trafficData) 
+        {
+            time_t time = system_clock::to_time_t(data.timestamp);
+            struct tm *tm = localtime(&time);
+            char buffer[80];
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", tm);
+            cout << "Timestamp: " << buffer << " | Light ID: " << data.lightId << " | Cars Passed: " << data.carsPassed << endl;
+        }
+        cout << endl;
+
+        sort(trafficData.begin(), trafficData.end(), [](const TrafficData& first, const TrafficData& second) 
+        {
+            return first.carsPassed > second.carsPassed;
+        });
+
+        cout << "Top 3 traffic lights that are congested are as follows =>" << endl;
+
+        for (int i = 0; i < min(3, (int)trafficData.size()); i++) 
+        {
+            time_t time = system_clock::to_time_t(trafficData[i].timestamp);
+            struct tm *tm = localtime(&time);
+            char buffer[80];
+            strftime(buffer, 80, "%Y-%m-%d %H:%M:%S", tm);
+            cout << "Timestamp: " << buffer << " | Light ID: " << trafficData[i].lightId << " | Cars Passed: " << trafficData[i].carsPassed << endl;
+        }
+
+        this_thread::sleep_for(chrono::hours(1));
     }
+}
 
-    pthread_t consumerThreads[NUM_CONSUMERS];
-    for (int i = 0; i < NUM_CONSUMERS; i++) {
-        pthread_create(&consumerThreads[i], NULL, (void*)&consume, &buffer);
-    }
+int main() 
+{
+    int numSignals = 20;
 
-    for (int i = 0; i < NUM_PRODUCERS; i++) {
-        pthread_join(producerThreads[i], NULL);
-    }
+    thread producer(produceTrafficData, numSignals);
+    thread consumer(consumeTrafficData, numSignals);
 
-    pthread_mutex_lock(&congestionDataLock);
-    // Notify consumers that no more data will be produced
-    pthread_mutex_unlock(&congestionDataLock);
-
-    for (int i = 0; i < NUM_CONSUMERS; i++) {
-        pthread_join(consumerThreads[i], NULL);
-    }
+    producer.join();
+    consumer.join();
 
     return 0;
 }
